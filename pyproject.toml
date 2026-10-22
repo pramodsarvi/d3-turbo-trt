@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "d3-trt"
+version = "0.1.0"
+description = "TensorRT / TensorRT-LLM serving runtime for vllm-sr/d3-turbo (code-readout decisions)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "d3-trt contributors" }]
+dependencies = [
+    "torch>=2.4",
+    "transformers>=5.0",
+    "safetensors>=0.4",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# GPU fast path. Install the TensorRT-LLM wheel that matches the CUDA/driver stack,
+# then these Python extras. `tensorrt-llm` is installed separately (NVIDIA index).
+cuda = [
+    "flash-attn>=2.7",
+    "flash-linear-attention>=0.3",
+    "causal-conv1d>=1.4",
+    "triton>=3.1",
+]
+trt = [
+    "tensorrt>=10.8",
+    "torch-tensorrt>=2.7",
+]
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2",
+]
+dev = [
+    "pytest>=8",
+    "accelerate>=1.0",
+]
+
+[project.scripts]
+d3-trt = "d3trt.cli:main"
+
+[project.entry-points."d3trt.backends"]
+hf = "d3trt.backends.hf:HFBackend"
+trtllm = "d3trt.backends.trtllm:TrtllmBackend"
+
+[tool.setuptools.packages.find]
+include = ["d3trt*"]
+
+[tool.setuptools.package-data]
+"d3trt._vendor" = ["*.py", "NOTICE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

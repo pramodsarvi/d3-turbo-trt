@@ -1,0 +1,61 @@
+[
+  {
+    "id": "route",
+    "state": "The checkout service is timing out and users cannot pay.",
+    "questions": {
+      "route": {
+        "type": "choice",
+        "instructions": "Pick the team that owns this.",
+        "criteria": {
+          "sre": "infrastructure and reliability",
+          "billing": "payments and invoicing",
+          "frontend": "web user interface"
+        }
+      }
+    }
+  },
+  {
+    "id": "urgent",
+    "state": "A single dashboard widget is showing a stale number.",
+    "questions": {
+      "urgent": {
+        "type": "noul",
+        "instructions": "Does this need immediate action?",
+        "criteria": {"true": "needs immediate action", "false": "can wait"}
+      }
+    }
+  },
+  {
+    "id": "mixed",
+    "state": "The database replica is 40 minutes behind and reads are stale.",
+    "questions": {
+      "route": {
+        "type": "choice",
+        "instructions": "Pick the owning team.",
+        "criteria": {"db": "database reliability", "web": "frontend", "billing": "payments"}
+      },
+      "severity": {
+        "type": "score",
+        "instructions": "How severe is this?",
+        "criteria": ["minor", "customer impacting"]
+      },
+      "urgent": {
+        "type": "noul",
+        "instructions": "Is this urgent?",
+        "criteria": {"true": "yes", "false": "no"}
+      }
+    }
+  },
+  {
+    "id": "invalid",
+    "state": "A state with one malformed question.",
+    "questions": {
+      "good": {
+        "type": "choice",
+        "instructions": "Pick one.",
+        "criteria": {"a": "first", "b": "second"}
+      },
+      "bad": {"type": "choice", "instructions": "Missing criteria."}
+    }
+  }
+]

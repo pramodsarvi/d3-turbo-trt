@@ -1,0 +1,9 @@
+The files d3_format.py and d3_compose.py in this directory are copied from
+the vllm-sr/d3-turbo model package (https://huggingface.co/vllm-sr/d3-turbo),
+Copyright the d3-turbo authors, licensed under the Apache License 2.0.
+They define the byte-exact d3 prompt and answer-code contract. Do not edit
+them; upstream changes must be pulled from the model package.
+
+d3_server.py is copied from the same package. It is the reference HTTP contract
+(routes, status codes, bearer auth, chunked bodies, media limits). The d3-trt
+server reuses it unchanged with an adapter that swaps the backbone runner.
