@@ -28,7 +28,8 @@ from typing import Any, Mapping, Sequence
 
 from .config import D3Config
 
-# Common device envelopes. Override on the command line for the actual part.
+# Common device envelopes: (dense peak TFLOP/s, HBM bandwidth TB/s).
+# Override on the command line for the actual part.
 PEAKS = {
     "h100-sxm-bf16": (989.0, 3.35),
     "h100-sxm-fp8": (1979.0, 3.35),

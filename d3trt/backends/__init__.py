@@ -36,18 +36,35 @@ def _trtllm(*args, **kwargs) -> Backend:
     return TrtllmBackend(*args, **kwargs)
 
 
+def _native(*args, **kwargs) -> Backend:
+    from .trtllm import NativeBackend
+
+    return NativeBackend(*args, **kwargs)
+
+
 register("hf", _hf)
 register("trtllm", _trtllm)
+register("native", _native)
 
 
-def detect() -> str:
-    """Pick the fastest backend that can run here, without loading weights."""
+def detect(device: str | None = None) -> str:
+    """Pick the fastest backend that can run here, without loading weights.
+
+    The CUDA backends are only candidates when ``device`` is unset or a CUDA device.
+    """
+    if device is not None and not str(device).startswith("cuda"):
+        return "hf"
     try:
         from .trtllm import trtllm_available
 
         ok, _ = trtllm_available()
         if ok:
             return "trtllm"
+        from ..model.trtllm_stack import native_available
+
+        ok, _ = native_available()
+        if ok:
+            return "native"
     except Exception:  # noqa: BLE001
         pass
     return "hf"

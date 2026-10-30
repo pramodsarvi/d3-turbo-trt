@@ -38,6 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..errors import BackendUnavailable, ConfigurationError
+from . import native
 from . import quant as quantization
 from .core import D3Core
 from .quant import QuantLinear, make_linear
@@ -60,14 +61,28 @@ def trtllm_available() -> tuple[bool, str]:
     return True, "ok"
 
 
+def _tp_mode(mapping: Any, name: str) -> Any:
+    """TensorRT-LLM TP mode, or ``None`` on the native path (``mapping is None``)."""
+    if mapping is None:
+        return None
+    from tensorrt_llm._torch.modules.linear import TensorParallelMode
+
+    return getattr(TensorParallelMode, name)
+
+
+def _rms_norm(dim: int, eps: float, dtype: torch.dtype, mapping: Any) -> nn.Module:
+    if mapping is None:
+        return native.RMSNorm(dim, eps, dtype=dtype)
+    from tensorrt_llm._torch.modules.rms_norm import RMSNorm
+
+    return RMSNorm(hidden_size=dim, eps=eps, dtype=dtype, use_gemma=True)
+
+
 class _TrtllmAttention(nn.Module):
     def __init__(
         self, config: Any, layer_idx: int, *, dtype: torch.dtype, mapping: Any, quant: str, device: Any
     ):
         super().__init__()
-        from tensorrt_llm._torch.modules.linear import TensorParallelMode
-        from tensorrt_llm._torch.modules.rms_norm import RMSNorm
-
         linear = functools.partial(make_linear, quant=quant, dtype=dtype, mapping=mapping, device=device)
 
         self.layer_idx = layer_idx
@@ -79,53 +94,41 @@ class _TrtllmAttention(nn.Module):
         self.q_proj = linear(
             self.hidden_size,
             self.num_heads * self.head_dim * 2,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.k_proj = linear(
             self.hidden_size,
             self.num_kv_heads * self.head_dim,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.v_proj = linear(
             self.hidden_size,
             self.num_kv_heads * self.head_dim,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.o_proj = linear(
             self.num_heads * self.head_dim,
             self.hidden_size,
-            tensor_parallel_mode=TensorParallelMode.ROW,
+            tensor_parallel_mode=_tp_mode(mapping, "ROW"),
         )
-        self.q_norm = RMSNorm(
-            hidden_size=self.head_dim,
-            eps=config.rms_norm_eps,
-            dtype=dtype,
-            use_gemma=True,
-        )
-        self.k_norm = RMSNorm(
-            hidden_size=self.head_dim,
-            eps=config.rms_norm_eps,
-            dtype=dtype,
-            use_gemma=True,
-        )
+        self.q_norm = _rms_norm(self.head_dim, config.rms_norm_eps, dtype, mapping)
+        self.k_norm = _rms_norm(self.head_dim, config.rms_norm_eps, dtype, mapping)
 
 
 class _TrtllmMLP(nn.Module):
     def __init__(self, config: Any, *, dtype: torch.dtype, mapping: Any, quant: str, device: Any):
         super().__init__()
-        from tensorrt_llm._torch.modules.linear import TensorParallelMode
-
         linear = functools.partial(make_linear, quant=quant, dtype=dtype, mapping=mapping, device=device)
 
         self.gate_up_proj = linear(
             config.hidden_size,
             2 * config.intermediate_size,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.down_proj = linear(
             config.intermediate_size,
             config.hidden_size,
-            tensor_parallel_mode=TensorParallelMode.ROW,
+            tensor_parallel_mode=_tp_mode(mapping, "ROW"),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -139,9 +142,6 @@ class _TrtllmGDN(nn.Module):
         self, config: Any, layer_idx: int, *, dtype: torch.dtype, mapping: Any, quant: str, device: Any
     ):
         super().__init__()
-        from tensorrt_llm._torch.modules.linear import TensorParallelMode
-        from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNormGated
-
         linear = functools.partial(make_linear, quant=quant, dtype=dtype, mapping=mapping, device=device)
 
         self.layer_idx = layer_idx
@@ -159,27 +159,27 @@ class _TrtllmGDN(nn.Module):
         self.in_proj_qkv = linear(
             self.hidden_size,
             self.conv_dim,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.in_proj_z = linear(
             self.hidden_size,
             self.value_dim,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.in_proj_b = linear(
             self.hidden_size,
             self.num_v_heads,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.in_proj_a = linear(
             self.hidden_size,
             self.num_v_heads,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            tensor_parallel_mode=_tp_mode(mapping, "COLUMN"),
         )
         self.out_proj = linear(
             self.value_dim,
             self.hidden_size,
-            tensor_parallel_mode=TensorParallelMode.ROW,
+            tensor_parallel_mode=_tp_mode(mapping, "ROW"),
         )
         self.conv1d = nn.Conv1d(
             in_channels=self.conv_dim,
@@ -195,7 +195,7 @@ class _TrtllmGDN(nn.Module):
         # dtype because its output feeds the bf16 out_proj.
         self.dt_bias = nn.Parameter(torch.ones(self.num_v_heads))
         self.A_log = nn.Parameter(torch.zeros(self.num_v_heads))
-        self.norm = Qwen3_5RMSNormGated(self.head_v_dim, eps=config.rms_norm_eps).to(dtype=dtype)
+        self.norm = native.RMSNormGated(self.head_v_dim, eps=config.rms_norm_eps, dtype=dtype)
 
 
 class _TrtllmLayer(nn.Module):
@@ -211,21 +211,9 @@ class _TrtllmLayer(nn.Module):
         device: Any,
     ):
         super().__init__()
-        from tensorrt_llm._torch.modules.rms_norm import RMSNorm
-
         self.kind = kind
-        self.input_layernorm = RMSNorm(
-            hidden_size=config.hidden_size,
-            eps=config.rms_norm_eps,
-            dtype=dtype,
-            use_gemma=True,
-        )
-        self.post_attention_layernorm = RMSNorm(
-            hidden_size=config.hidden_size,
-            eps=config.rms_norm_eps,
-            dtype=dtype,
-            use_gemma=True,
-        )
+        self.input_layernorm = _rms_norm(config.hidden_size, config.rms_norm_eps, dtype, mapping)
+        self.post_attention_layernorm = _rms_norm(config.hidden_size, config.rms_norm_eps, dtype, mapping)
         parts = dict(dtype=dtype, mapping=mapping, quant=quant, device=device)
         self.mlp = _TrtllmMLP(config, **parts)
         if kind == "full_attention":
@@ -235,7 +223,11 @@ class _TrtllmLayer(nn.Module):
 
 
 class TrtllmStack:
-    """A TensorRT-LLM-backed d3 backbone."""
+    """A d3 backbone built from TensorRT-LLM modules (``impl="trtllm"``) or from
+    the dependency-free modules in :mod:`d3trt.model.native` (``impl="native"``).
+    Both share the weight loader, the state-once core and the kernels."""
+
+    impl = "trtllm"
 
     def __init__(
         self,
@@ -248,12 +240,12 @@ class TrtllmStack:
         recurrent_max_tokens: int = 256,
         quant: str = "none",
     ):
-        ok, reason = trtllm_available()
+        ok, reason = self.available()
         if not ok:
-            raise BackendUnavailable("trtllm", reason)
+            raise BackendUnavailable(self.impl, reason)
         if tp_size != 1:
             raise BackendUnavailable(
-                "trtllm",
+                self.impl,
                 "this build starts every rank independently and supports tp_size=1; "
                 "use one 80 GB+ GPU, or quant='fp8' (sm_89+) / 'int8' (A100) to fit 40-48 GB. TP support "
                 "is isolated in d3trt/model/trtllm_stack.py and is the next GPU-day item.",
@@ -269,37 +261,35 @@ class TrtllmStack:
         self._build()
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def available() -> tuple[bool, str]:
+        return trtllm_available()
+
     def _build(self) -> None:
-        from tensorrt_llm.mapping import Mapping
-        from transformers import AutoConfig
-        from transformers.models.qwen3_5.modeling_qwen3_5 import (
-            Qwen3_5TextRotaryEmbedding,
-            apply_rotary_pos_emb,
-        )
-        from tensorrt_llm._torch.modules.embedding import Embedding
-        from tensorrt_llm._torch.modules.linear import TensorParallelMode
-        from tensorrt_llm._torch.modules.rms_norm import RMSNorm
-
         torch.cuda.set_device(self.device)
-        hf = AutoConfig.from_pretrained(self.model_dir)
-        text = hf.text_config
-        self.hf_config = hf
+        text = native.load_text_config(self.model_dir)
         self.text_config = text
-        self.mapping = Mapping(
-            world_size=self.tp_size,
-            tp_size=self.tp_size,
-            rank=self.rank,
-            gpus_per_node=self.tp_size,
-        )
+        if self.impl == "native":
+            self.mapping = None
+            self.embed = nn.Embedding(text.vocab_size, text.hidden_size, dtype=self.dtype, device=self.device)
+        else:
+            from tensorrt_llm._torch.modules.embedding import Embedding
+            from tensorrt_llm.mapping import Mapping
 
-        self.embed = Embedding(
-            text.vocab_size,
-            text.hidden_size,
-            dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN if self.tp_size > 1 else None,
-            gather_output=self.tp_size > 1,
-        ).to(self.device)
+            self.mapping = Mapping(
+                world_size=self.tp_size,
+                tp_size=self.tp_size,
+                rank=self.rank,
+                gpus_per_node=self.tp_size,
+            )
+            self.embed = Embedding(
+                text.vocab_size,
+                text.hidden_size,
+                dtype=self.dtype,
+                mapping=self.mapping,
+                tensor_parallel_mode=_tp_mode(self.mapping, "COLUMN") if self.tp_size > 1 else None,
+                gather_output=self.tp_size > 1,
+            ).to(self.device)
 
         self.layers = nn.ModuleList()
         for index, kind in enumerate(text.layer_types):
@@ -314,14 +304,9 @@ class TrtllmStack:
             )
             self.layers.append(layer)
         self.layers.to(self.device)
-        self.norm = RMSNorm(
-            hidden_size=text.hidden_size,
-            eps=text.rms_norm_eps,
-            dtype=self.dtype,
-            use_gemma=True,
-        ).to(self.device)
-        self.rotary = Qwen3_5TextRotaryEmbedding(text, device=self.device).to(self.device)
-        self.apply_rotary = apply_rotary_pos_emb
+        self.norm = _rms_norm(text.hidden_size, text.rms_norm_eps, self.dtype, self.mapping).to(self.device)
+        self.rotary = native.RotaryEmbedding(text, device=self.device).to(self.device)
+        self.apply_rotary = native.apply_rotary_pos_emb
         self._load_weights()
         self.layers.eval().requires_grad_(False)
         self.norm.eval().requires_grad_(False)
@@ -471,7 +456,7 @@ class TrtllmStack:
         from . import ops
 
         return {
-            "backend": "trtllm",
+            "backend": self.impl,
             "device": str(self.device),
             "dtype": str(self.dtype),
             "layers": len(self.layers),
@@ -497,7 +482,7 @@ def _copy_linear(linear: Any, full: torch.Tensor, device: torch.device) -> None:
     if isinstance(linear, QuantLinear):
         linear.load_full(full.to(device))
         return
-    if linear.tp_size != 1:
+    if getattr(linear, "tp_size", 1) != 1:
         # Let TRT-LLM shard the full tensor across ranks.
         linear.load_weights([{"weight": full.to(device)}])
         return
@@ -506,3 +491,19 @@ def _copy_linear(linear: Any, full: torch.Tensor, device: torch.device) -> None:
             f"linear shape mismatch: module {tuple(linear.weight.shape)} vs checkpoint {tuple(full.shape)}"
         )
     linear.weight.data.copy_(full.to(device=device, dtype=linear.weight.dtype))
+
+
+class NativeStack(TrtllmStack):
+    """The d3 backbone with no TensorRT-LLM or Transformers dependency."""
+
+    impl = "native"
+
+    @staticmethod
+    def available() -> tuple[bool, str]:
+        return native_available()
+
+
+def native_available() -> tuple[bool, str]:
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available"
+    return True, "ok"

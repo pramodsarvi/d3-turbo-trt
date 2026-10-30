@@ -74,7 +74,8 @@ class HFBackend(Backend):
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         if str(device).startswith("cuda") and not torch.cuda.is_available():
             raise BackendUnavailable("hf", "CUDA was requested but is not available")
-        dtype_name = self.dtype or ("bfloat16" if str(device).startswith("cuda") else "float32")
+        # Match the reference runtime, which loads the backbone in bf16 on every device.
+        dtype_name = self.dtype or "bfloat16"
         torch_dtype = getattr(torch, dtype_name)
 
         started = time.perf_counter()

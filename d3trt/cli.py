@@ -28,6 +28,14 @@ def _gb(value: str | None) -> int | None:
     return int(float(value) * 1024**3)
 
 
+def _peaks(args: argparse.Namespace) -> tuple[float, float]:
+    """(peak TFLOP/s, bandwidth GB/s). PEAKS stores bandwidth in TB/s."""
+    if args.device_profile:
+        peak, tbps = PEAKS[args.device_profile]
+        return peak, tbps * 1000.0
+    return args.peak_tflops, args.bandwidth_gbps
+
+
 def _backend_options(args: argparse.Namespace) -> dict[str, Any] | None:
     options: dict[str, Any] = {}
     if getattr(args, "recurrent_max_tokens", None) is not None:
@@ -37,9 +45,9 @@ def _backend_options(args: argparse.Namespace) -> dict[str, Any] | None:
     if getattr(args, "quant", None) is not None:
         from . import backends
 
-        name = backends.detect() if args.backend == "auto" else args.backend
-        if name != "trtllm":
-            raise SystemExit(f"--quant applies to the trtllm backend only (backend is {name})")
+        name = backends.detect(args.device) if args.backend == "auto" else args.backend
+        if name not in ("trtllm", "native"):
+            raise SystemExit(f"--quant applies to the trtllm/native backends only (backend is {name})")
         options["quant"] = args.quant
     return options or None
 
@@ -64,7 +72,7 @@ def _engine(args: argparse.Namespace):
 def _add_common(parser: argparse.ArgumentParser, *, model_required: bool = True) -> None:
     parser.add_argument("--model", required=model_required, help="d3 package directory")
     parser.add_argument("--reference-dir", help="directory holding d3_runtime.py if not in the package")
-    parser.add_argument("--backend", default="auto", choices=["auto", "hf", "trtllm"])
+    parser.add_argument("--backend", default="auto", choices=["auto", "hf", "trtllm", "native"])
     parser.add_argument("--device", help="torch device (default: cuda:0 if available, else cpu)")
     parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--batch-size", type=int, default=8, help="question blocks per forward pass")
@@ -162,7 +170,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
     )
     report = run_benchmark(engine, cases, repeats=args.repeats, warmup=args.warmup)
     if args.roofline:
-        peak, bandwidth = PEAKS.get(args.device_profile, (args.peak_tflops, args.bandwidth_gbps))
+        peak, bandwidth = _peaks(args)
         report["roofline"] = roofline(
             engine.config,
             state_tokens=args.state_tokens,
@@ -259,7 +267,7 @@ def _pick_variant(variants: list[Any], name: str | None, backend: str) -> Any:
             if variant.name == name:
                 return variant
         raise SystemExit(f"unknown variant {name!r}")
-    preferred = "trtllm+cache" if backend == "trtllm" else "core+cache"
+    preferred = f"{backend}+cache" if backend in ("trtllm", "native") else "core+cache"
     for variant in variants:
         if variant.name == preferred:
             return variant
@@ -271,7 +279,7 @@ def cmd_roofline(args: argparse.Namespace) -> int:
     from .config import load_config
 
     config = load_config(args.model)
-    peak, bandwidth = PEAKS.get(args.device_profile, (args.peak_tflops, args.bandwidth_gbps))
+    peak, bandwidth = _peaks(args)
     payload = roofline(
         config,
         state_tokens=args.state_tokens,
@@ -342,7 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--warmup", type=int, default=1)
     bench.add_argument("--state-cache-gb", type=str)
     bench.add_argument("--roofline", action="store_true")
-    bench.add_argument("--device-profile", default="h100-sxm-bf16", choices=sorted(PEAKS))
+    bench.add_argument(
+        "--device-profile", choices=sorted(PEAKS), help="preset; overrides --peak-tflops/--bandwidth-gbps"
+    )
     bench.add_argument("--peak-tflops", type=float, default=989.0)
     bench.add_argument("--bandwidth-gbps", type=float, default=3350.0)
     bench.add_argument("--json-out")
@@ -379,7 +389,9 @@ def build_parser() -> argparse.ArgumentParser:
     roof.add_argument("--state-tokens", type=int, default=4096)
     roof.add_argument("--question-tokens", type=int, default=96)
     roof.add_argument("--questions", type=int, default=8)
-    roof.add_argument("--device-profile", default="h100-sxm-bf16", choices=sorted(PEAKS))
+    roof.add_argument(
+        "--device-profile", choices=sorted(PEAKS), help="preset; overrides --peak-tflops/--bandwidth-gbps"
+    )
     roof.add_argument("--peak-tflops", type=float, default=989.0)
     roof.add_argument("--bandwidth-gbps", type=float, default=3350.0)
     roof.set_defaults(func=cmd_roofline)

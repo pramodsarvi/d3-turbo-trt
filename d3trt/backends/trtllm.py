@@ -16,12 +16,13 @@ from typing import Any, Mapping, Sequence
 from .. import nvtx
 from ..errors import BackendUnavailable, MediaNotSupported
 from ..model.cache import StateCache
-from ..model.trtllm_stack import TrtllmStack, trtllm_available
+from ..model.trtllm_stack import NativeStack, TrtllmStack, trtllm_available
 from .base import Backend
 
 
 class TrtllmBackend(Backend):
     name = "trtllm"
+    stack_class: type[TrtllmStack] = TrtllmStack
 
     def __init__(
         self,
@@ -60,11 +61,11 @@ class TrtllmBackend(Backend):
             return
         if self.frontend is None:
             raise RuntimeError("TrtllmBackend.attach(frontend) must be called before start()")
-        ok, reason = trtllm_available()
+        ok, reason = self.stack_class.available()
         if not ok:
-            raise BackendUnavailable("trtllm", reason)
+            raise BackendUnavailable(self.name, reason)
         started = time.perf_counter()
-        self.stack = TrtllmStack(
+        self.stack = self.stack_class(
             str(self.model_dir),
             device=self.device,
             dtype=self.dtype,
@@ -87,7 +88,7 @@ class TrtllmBackend(Backend):
     def media_unavailable(self, kind: str) -> str | None:
         if kind in ("image", "video"):
             return (
-                f"the trtllm backend serves text only; use backend='hf' for {kind} "
+                f"the {self.name} backend serves text only; use backend='hf' for {kind} "
                 "requests until the TensorRT vision path is enabled"
             )
         return None
@@ -97,7 +98,7 @@ class TrtllmBackend(Backend):
             self.start()
         if prepared.images or prepared.videos:
             raise MediaNotSupported(
-                "the trtllm backend currently serves text; media needs the HF backend"
+                f"the {self.name} backend currently serves text; media needs the HF backend"
             )
         keys = list(prepared.runnable)
         if not keys:
@@ -190,7 +191,7 @@ class TrtllmBackend(Backend):
             if rev:
                 out[key] = average_orders(out[key], p)
         self.last_timings = {
-            "path": "trtllm",
+            "path": self.name,
             "state_ms": round(state_ms, 3),
             "question_ms": round(max(0.0, question_ms), 3),
             "readout_ms": round(readout_ms, 3),
@@ -273,3 +274,11 @@ def _sync(device: Any) -> None:
             torch.cuda.synchronize()
     except Exception:  # noqa: BLE001
         pass
+
+
+class NativeBackend(TrtllmBackend):
+    """Same scheduler and kernels, built from plain PyTorch modules: no
+    TensorRT-LLM and no Transformers on the hot path."""
+
+    name = "native"
+    stack_class = NativeStack

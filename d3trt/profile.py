@@ -140,12 +140,13 @@ def default_variants(
                 compile_layers=True,
             ),
         ]
-    if name == "trtllm":
+    if name in ("trtllm", "native"):
+        modules = "TRT-LLM" if name == "trtllm" else "native PyTorch"
         return [
-            Variant("trtllm", "TRT-LLM modules, no state cache", cache_bytes=0),
-            Variant("trtllm+cache", "TRT-LLM modules + state cache", cache_bytes=cache_bytes),
+            Variant(name, f"{modules} modules, no state cache", cache_bytes=0),
+            Variant(f"{name}+cache", f"{modules} modules + state cache", cache_bytes=cache_bytes),
             Variant(
-                "trtllm+cache+flash",
+                f"{name}+cache+flash",
                 "FlashAttention state and questions",
                 cache_bytes=cache_bytes,
                 attention_state="flash",
@@ -153,7 +154,7 @@ def default_variants(
                 gpu_only=True,
             ),
             Variant(
-                "trtllm+cache+triton",
+                f"{name}+cache+triton",
                 "FlashAttention state + shared-prefix Triton questions",
                 cache_bytes=cache_bytes,
                 attention_state="flash",
@@ -161,32 +162,32 @@ def default_variants(
                 gpu_only=True,
             ),
             Variant(
-                "trtllm+cache+sdpa",
+                f"{name}+cache+sdpa",
                 "force PyTorch SDPA (reference comparison)",
                 cache_bytes=cache_bytes,
                 attention_state="sdpa",
                 attention_question="sdpa",
             ),
             Variant(
-                "trtllm+cache+gdn-recurrent",
+                f"{name}+cache+gdn-recurrent",
                 "recurrent GDN for short question blocks",
                 cache_bytes=cache_bytes,
                 recurrent_max_tokens=256,
             ),
             Variant(
-                "trtllm+cache+batch1",
+                f"{name}+cache+batch1",
                 "one question block per forward",
                 cache_bytes=cache_bytes,
                 batch_size=1,
             ),
             Variant(
-                "trtllm+cache+batch32",
+                f"{name}+cache+batch32",
                 "up to 32 question blocks per forward",
                 cache_bytes=cache_bytes,
                 batch_size=32,
             ),
             Variant(
-                "trtllm+cache+compile",
+                f"{name}+cache+compile",
                 "torch.compile each decoder layer",
                 cache_bytes=cache_bytes,
                 compile_layers=True,

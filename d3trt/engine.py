@@ -63,7 +63,7 @@ class DecisionEngine:
             permutation_average=permutation_average,
             max_length=max_length,
         )
-        self.backend_name = backends.detect() if backend == "auto" else backend
+        self.backend_name = backends.detect(device) if backend == "auto" else backend
         options = dict(backend_options or {})
         options.setdefault("device", device)
         options.setdefault("dtype", dtype)

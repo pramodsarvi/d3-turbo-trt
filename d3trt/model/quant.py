@@ -221,9 +221,14 @@ def make_linear(
     tensor_parallel_mode: Any,
     device: Any,
 ) -> nn.Module:
-    """TRT-LLM ``Linear`` for BF16, :class:`QuantLinear` for fp8/int8."""
+    """TRT-LLM ``Linear`` (native ``nn.Linear`` when ``mapping`` is None) for BF16,
+    :class:`QuantLinear` for fp8/int8."""
     if quant in ("fp8", "int8") and quantizable(in_features, out_features):
         return QuantLinear(in_features, out_features, mode=quant, dtype=dtype, device=device)
+    if mapping is None:
+        from .native import Linear as NativeLinear
+
+        return NativeLinear(in_features, out_features, dtype=dtype, device=device)
     from tensorrt_llm._torch.modules.linear import Linear
 
     return Linear(

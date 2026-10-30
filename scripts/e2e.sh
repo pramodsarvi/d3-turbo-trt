@@ -4,7 +4,7 @@
 #   scripts/e2e.sh tiny              # CPU/Mac: venv, tiny checkpoint, pytest, HF parity, HTTP smoke
 #   scripts/e2e.sh gpu [MODEL_DIR]   # GPU box: check, HF + TRT parity, HTTP smoke, bench, profile
 #
-# Env: BACKEND (hf|trtllm, default hf for tiny / trtllm for gpu), PORT (8000),
+# Env: BACKEND (hf|trtllm|native, default hf for tiny / trtllm for gpu), DEVICE_PROFILE (roofline preset), PORT (8000),
 #      STATE_CACHE_GB (8), STATE_TOKENS (4096), QUESTIONS (16), HF_TOKEN
 # Results land in traces/e2e-<mode>-<timestamp>/ ; exit code is non-zero if any step failed.
 set -uo pipefail
@@ -75,19 +75,21 @@ gpu)
   REF_ARGS=(); [[ -n "${REF_DEVICE:-}" ]] && REF_ARGS=(--reference-device "$REF_DEVICE")
   # candidate args: --quant is trtllm-only (the CLI rejects it for hf); QUANT=fp8|int8|none|auto
   CAND=(--device cuda:0 --state-cache-gb "$SC")
-  [[ "$BACKEND" == "trtllm" && -n "${QUANT:-}" ]] && CAND+=(--quant "$QUANT")
+  [[ "$BACKEND" != "hf" && -n "${QUANT:-}" ]] && CAND+=(--quant "$QUANT")
   run pytest python -m pytest -q tests
   run check d3-trt check --model "$MODEL" --state-cache-gb "$SC"
   run parity-hf d3-trt parity --model "$MODEL" --backend hf --device cuda:0 --dtype bfloat16 \
       ${REF_ARGS[@]+"${REF_ARGS[@]}"} --cases tests/golden/text.json --json-out "$OUT/parity-hf.json"
   if [[ "$BACKEND" != "hf" ]]; then
-    run parity-$BACKEND d3-trt parity --model "$MODEL" --backend "$BACKEND" "${CAND[@]}" \
+    # parity takes no --state-cache-gb, so drop it from the candidate args
+    PCAND=(--device cuda:0); [[ -n "${QUANT:-}" ]] && PCAND+=(--quant "$QUANT")
+    run parity-$BACKEND d3-trt parity --model "$MODEL" --backend "$BACKEND" "${PCAND[@]}" \
         ${REF_ARGS[@]+"${REF_ARGS[@]}"} --cases tests/golden/text.json --json-out "$OUT/parity-$BACKEND.json"
   fi
   run http-smoke serve_and_smoke "$MODEL" "$BACKEND" "${CAND[@]}" --fallback
   run bench d3-trt bench --model "$MODEL" --backend "$BACKEND" "${CAND[@]}" \
       --state-tokens "${STATE_TOKENS:-4096}" --questions "${QUESTIONS:-16}" --repeats 5 --roofline \
-      --json-out "$OUT/bench.json"
+      ${DEVICE_PROFILE:+--device-profile "$DEVICE_PROFILE"} --json-out "$OUT/bench.json"
   run profile d3-trt profile --model "$MODEL" --backend "$BACKEND" "${CAND[@]}" --suite all \
       --state-tokens "${STATE_TOKENS:-4096}" --questions "${QUESTIONS:-16}" \
       --trace-out "$OUT/trace.json" --json-out "$OUT/profile.json"
