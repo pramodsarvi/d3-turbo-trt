@@ -48,7 +48,11 @@ def build(out: Path, tokenizer_from: Path, *, hidden: int, layers: int) -> None:
         attention_dropout=0.0,
         attn_output_gate=True,
         output_gate_type="swish",
-        layer_types=["linear_attention" if i % 4 != 3 else "full_attention" for i in range(layers)],
+        # last layer is always full attention so shallow models still cover both paths
+        layer_types=[
+            "full_attention" if (i % 4 == 3 or i == layers - 1) else "linear_attention"
+            for i in range(layers)
+        ],
         linear_conv_kernel_dim=4,
         linear_key_head_dim=head_dim,
         linear_value_head_dim=head_dim,
