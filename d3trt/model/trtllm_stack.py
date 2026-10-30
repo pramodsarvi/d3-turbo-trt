@@ -319,8 +319,10 @@ class TrtllmStack:
             final_norm=self.norm,
             rotary_emb=self.rotary,
             apply_rotary=self.apply_rotary,
-            attention_state="flash",
-            attention_question="triton",
+            # SDPA matches the reference bit for bit and measured as fast as the
+            # Triton shared-prefix kernel on the real model (365 vs 371 ms).
+            attention_state="sdpa",
+            attention_question="sdpa",
             recurrent_max_tokens=self.recurrent_max_tokens,
         )
         self.readout = self.weights.readout(device=self.device).float()

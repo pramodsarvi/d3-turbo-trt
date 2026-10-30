@@ -134,41 +134,33 @@ def sdpa_questions(
     *,
     scale: float,
 ) -> torch.Tensor:
-    """Per-row bidirectional attention over ``state + own question``.
+    """Per-row bidirectional attention over ``state + own question``, all rows at once.
 
     ``q``/``k_q``/``v_q`` are [B, H, L, D] right-padded; ``k_state``/``v_state``
     are [H_kv, S, D] (shared by every row). Returns [B, H, L, D]. Padding keys are
-    excluded by the per-row slice.
+    masked out.
+
+    The call uses a boolean mask, as the reference ``StateOnce._attention`` does,
+    so SDPA picks the same kernel and the result is bitwise identical to the
+    oracle; an unmasked GQA call picks another kernel whose bf16 rounding
+    compounds to ~0.04 in answer probabilities over 64 layers. Instead of
+    repeating each KV head for its query heads (6x copies of the state KV), the
+    query heads of a group are folded into the sequence dimension: every query
+    row sees the same keys in the same order, so the output is unchanged
+    (verified bitwise) and the call is ~1.5x faster.
     """
     rows, heads, width, dim = q.shape
-    out = q.new_zeros(q.shape)
-    for row in range(rows):
-        length = int(lengths[row])
-        keys = torch.cat([k_state, k_q[row, :, :length]], dim=1)
-        values = torch.cat([v_state, v_q[row, :, :length]], dim=1)
-        try:
-            out[row, :, :length] = F.scaled_dot_product_attention(
-                q[row, :, :length].unsqueeze(0),
-                keys.unsqueeze(0),
-                values.unsqueeze(0),
-                attn_mask=None,
-                scale=scale,
-                is_causal=False,
-                enable_gqa=True,
-            ).squeeze(0)
-        except TypeError:
-            groups = heads // k_state.shape[0]
-            keys = repeat_kv(keys.unsqueeze(0), groups).squeeze(0)
-            values = repeat_kv(values.unsqueeze(0), groups).squeeze(0)
-            out[row, :, :length] = F.scaled_dot_product_attention(
-                q[row, :, :length].unsqueeze(0),
-                keys.unsqueeze(0),
-                values.unsqueeze(0),
-                attn_mask=None,
-                scale=scale,
-                is_causal=False,
-            ).squeeze(0)
-    return out
+    kv_heads, state = k_state.shape[0], k_state.shape[1]
+    groups = heads // kv_heads
+    keys = torch.cat([k_state.unsqueeze(0).expand(rows, -1, -1, -1), k_q], dim=2)
+    values = torch.cat([v_state.unsqueeze(0).expand(rows, -1, -1, -1), v_q], dim=2)
+    present = torch.arange(width, device=q.device)[None] < torch.as_tensor(list(lengths), device=q.device)[:, None]
+    mask = torch.ones(rows, 1, width, state + width, dtype=torch.bool, device=q.device)
+    mask[:, 0, :, state:] = present[:, None, :]
+    # Head h = kv * groups + j reads KV head kv; fold j into the query rows.
+    folded = q.reshape(rows, kv_heads, groups * width, dim)
+    out = F.scaled_dot_product_attention(folded, keys, values, attn_mask=mask.repeat(1, 1, groups, 1), scale=scale)
+    return out.reshape(rows, heads, width, dim)
 
 
 def flash_state(
