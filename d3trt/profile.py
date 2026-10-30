@@ -53,7 +53,7 @@ class Variant:
     attention_question: str | None = None
     recurrent_max_tokens: int | None = None
     batch_size: int | None = None
-    compile_layers: bool | None = None
+    compile_layers: bool | str | None = None
     gpu_only: bool = False
 
 
@@ -192,6 +192,12 @@ def default_variants(
                 cache_bytes=cache_bytes,
                 compile_layers=True,
             ),
+            Variant(
+                f"{name}+cache+compile-state",
+                "torch.compile the state pass only",
+                cache_bytes=cache_bytes,
+                compile_layers="state",
+            ),
         ]
     raise ValueError(f"no profile variants for backend {name!r}")
 
@@ -223,7 +229,7 @@ def _capture_base(engine: Any) -> dict[str, Any]:
         base["attention_state"] = core.attention_state
         base["attention_question"] = core.attention_question
         base["recurrent_max_tokens"] = int(core.recurrent_max_tokens)
-        base["compile_layers"] = bool(core.compile_layers)
+        base["compile_layers"] = core.compile_layers
     engine._profile_base = base
     return base
 
@@ -265,7 +271,7 @@ def apply_variant(engine: Any, variant: Variant) -> None:
             else base["recurrent_max_tokens"]
         )
         compile_layers = (
-            bool(variant.compile_layers)
+            variant.compile_layers
             if variant.compile_layers is not None
             else base["compile_layers"]
         )

@@ -63,7 +63,7 @@ class D3Core:
         delta_impl: Any = None,
         attention_state: str = "auto",
         attention_question: str = "auto",
-        compile_layers: bool = False,
+        compile_layers: bool | str = False,
         recurrent_max_tokens: int = 0,
     ):
         if len(layers) != len(layer_types):
@@ -89,11 +89,30 @@ class D3Core:
     def depth(self) -> int:
         return len(self.layers)
 
+    def _compiles(self, phase: str) -> bool:
+        """``compile_layers``: False, True / "all", "state" or "questions"."""
+        mode = self.compile_layers
+        if mode is True or mode == "all":
+            return True
+        return bool(mode) and mode == phase
+
     def _layer_call(self, index: int, fn: Any, *args: Any) -> Any:
-        if not self.compile_layers:
+        # The phase ("state" / "questions") is _layer's last argument.
+        if not self._compiles(args[-1]):
             return fn(*args)
         compiled = self._compiled.get(index)
         if compiled is None:
+            # Every layer is the same function with different modules, so dynamo
+            # keeps one entry per layer (and per dynamic-shape specialisation).
+            # The default limit of 8 would silently run most layers eagerly.
+            import torch._dynamo.config as dynamo_config
+
+            limit = 4 * len(self.layers)
+            for name in ("recompile_limit", "cache_size_limit"):
+                if getattr(dynamo_config, name, limit) < limit:
+                    setattr(dynamo_config, name, limit)
+            if getattr(dynamo_config, "accumulated_recompile_limit", limit) < limit:
+                dynamo_config.accumulated_recompile_limit = limit
             compiled = torch.compile(fn, mode="max-autotune-no-cudagraphs", fullgraph=False)
             self._compiled[index] = compiled
         return compiled(*args)
